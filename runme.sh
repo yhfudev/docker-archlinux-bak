@@ -1,84 +1,121 @@
-#!/usr/bin/env bash
-
+#!/bin/bash
+USE_AUR=1
 DN_TOP=$(pwd)
 DN_ROOT="${DN_TOP}/archroot"
-MYARCH=$(uname -m)
 
-# https://raw.githubusercontent.com/l3iggs/docker-archlinux/master/buildme.sh
-# https://raw.githubusercontent.com/docker/docker/master/contrib/mkimage-arch.sh
+# since the apt-get place lock in $ROOTFS/var/cache/apt/archives
+# we need to seperate the dir from multiple instances if we want to share the apt cache
+# so we place *.deb and lock file into two folders in ${SRCDEST}/apt-cache-armhf and ${srcdir}/apt-cache-armhf seperately
 
-#Installation
-mkdir -pv ${DN_ROOT}/var/lib/pacman
-PKGIGNORELIST=(
-    cryptsetup
-    device-mapper
-    dhcpcd
-    iproute2
-    jfsutils
-#    linux
-    lvm2
-    man-db
-    man-pages
-    mdadm
-    nano
-    netctl
-    openresolv
-    pciutils
-#    pcmciautils
-    reiserfsprogs
-    s-nail
-    systemd-sysvcompat
-    usbutils
-#    vi
-    xfsprogs
-)
-PKGIGNORE="${PKGIGNORELIST[*]}"
-pacman --root ${DN_ROOT}/ -Sy base haveged --noconfirm
-pacman --root ${DN_ROOT}/ -Rns ${PKGIGNORE}
+# link the *.xz from ${SRCDEST}/pacman-pkg-armhf to ${srcdir}/pacman-pkg-armhf
+pkgcache_link2srcdst() {
+    # the read-only dir stores the real files
+    PARAM_DN_STORE=$1
+    shift
+    # the relative path name for the real files
+    PARAM_DN_BASE=$1
+    shift
+    # the dir contains the symbol links
+    PARAM_DN_LINK=$1
+    shift
 
-#pacman --root ${DN_ROOT}/ -Syyu --needed --noconfirm
-#pacman --root ${DN_ROOT}/ -S --needed --noconfirm reflector
-#arch-chroot ${DN_ROOT} reflector --verbose -l 200 -p http --sort rate --save /etc/pacman.d/mirrorlist
-#pacman --root ${DN_ROOT}/ -Rns --noconfirm reflector
+    sudo mkdir -p "${PARAM_DN_STORE}"
+    sudo mkdir -p "${PARAM_DN_LINK}"
+    sudo mkdir -p "${PARAM_DN_LINK}-real"
+    sudo mount -o bind "${PARAM_DN_STORE}" "${PARAM_DN_LINK}-real"
+    cd "${PARAM_DN_LINK}"
+    find "${PARAM_DN_BASE}" -name "*.xz" -type f | while read i; do
+        FN="$(basename ${i})"
+        sudo rm -f "${FN}"
+        sudo ln -s "${i}" "${FN}"
+    done
+    cd -
+}
 
-chroot ${DN_ROOT} /bin/sh -c "haveged -w 1024; pacman-key --init; pkill haveged; pacman -Rs --noconfirm haveged; pacman-key --populate archlinux; pkill gpg-agent"
-ln -s /usr/share/zoneinfo/UTC ${DN_ROOT}/etc/localtime
-echo 'en_US.UTF-8 UTF-8' >> ${DN_ROOT}/etc/locale.gen
-chroot ${DN_ROOT} locale-gen
-cp /etc/pacman.d/mirrorlist ${DN_ROOT}/etc/pacman.d/mirrorlist
+# backup the new downloaded *.xz from ${srcdir}/apt-cache-armhf to ${SRCDEST}/apt-cache-armhf
+pkgcache_backup2srcdst() {
+    # the read-only dir stores the real files
+    PARAM_DN_STORE=$1
+    shift
+    # the relative path name for the real files
+    PARAM_DN_BASE=$1
+    shift
+    # the dir contains the symbol links
+    PARAM_DN_LINK=$1
+    shift
 
-sed -i -e 's/^SigLevel.*/SigLevel = Never/g' ${DN_ROOT}/etc/pacman.conf
+    # make sure the files are not symbol links
+    cd "${PARAM_DN_LINK}"
+    find "${PARAM_DN_LINK}" -name "*.xz" -type f | while read i; do
+        FN="$(basename ${i})"
+        sudo mv "${i}" "${PARAM_DN_BASE}"
+        sudo rm -f "${FN}"
+        sudo ln -s "${PARAM_DN_BASE}/${FN}" "${FN}"
+    done
+    sudo umount "${PARAM_DN_LINK}-real"
+    sudo rmdir  "${PARAM_DN_LINK}-real"
+    find "${PARAM_DN_LINK}" | while read i ; do sudo rm -rf $i; done
+    cd -
+}
 
-#Clean up
-pacman -Rncs --root ${DN_ROOT}/ --noconfirm linux man-db man-pages
+cat > Dockerfile << EOF
+# Arch Linux baseline docker container
+# Generated on `date`
+# Read the following to learn how the root filesystem image was generated:
+# https://github.com/yhfudev/docker-archlinux/blob/master/README.md
+FROM scratch
+MAINTAINER yhfudev <yhfudev@gmail.com>
+ADD archlinux.tar.xz /
+RUN pacman -Syyu --needed --noconfirm
 
-rm -rf ${DN_ROOT}/usr/share/locale
-rm -rf ${DN_ROOT}/usr/share/man
+# install, run and remove reflector all in one line to prevent extra layer size
+RUN pacman -S --needed --noconfirm reflector; reflector --verbose -l 200 -p http --sort rate --save /etc/pacman.d/mirrorlist; pacman -Rs --noconfirm reflector
 
-# udev doesn't work in containers, rebuild /dev
-DEV=${DN_ROOT}/dev
-rm -rf $DEV
-mkdir -p $DEV
-mknod -m 666 $DEV/null c 1 3
-mknod -m 666 $DEV/zero c 1 5
-mknod -m 666 $DEV/random c 1 8
-mknod -m 666 $DEV/urandom c 1 9
-mkdir -m 755 $DEV/pts
-mkdir -m 1777 $DEV/shm
-mknod -m 666 $DEV/tty c 5 0
-mknod -m 600 $DEV/console c 5 1
-mknod -m 666 $DEV/tty0 c 4 0
-mknod -m 666 $DEV/full c 1 7
-mknod -m 600 $DEV/initctl p
-mknod -m 666 $DEV/ptmx c 5 2
-ln -sf /proc/self/fd $DEV/fd
+EOF
 
-#Archive
-echo "compresssing archlinux ${MYARCH} ..."
-tar --numeric-owner --xattrs --acls -C ${DN_ROOT} -c . -af archlinux-${MYARCH}-image.tar.xz
+# if supports AUR
+if [ "${USE_AUR}" = "1" ]; then
+    cat >> Dockerfile << EOF
+# install development packages
+RUN pacman -S --noconfirm --needed base-devel
 
-MYUSER=yhfu
-docker import - ${MYUSER}/archlinux-${MYARCH}:latest < archlinux-${MYARCH}-image.tar.xz
+# no sudo password for users in wheel group
+RUN sed -i 's/# %wheel ALL=(ALL) NOPASSWD: ALL/%wheel ALL=(ALL) NOPASSWD: ALL/g' /etc/sudoers
 
-# example:
-# docker run -t -i ${MYUSER}/archlinux-${MYARCH}:latest bash
+# create docker user
+RUN useradd -m -G wheel docker
+
+WORKDIR /home/docker
+# install yaourt
+RUN su -c "(bash <(curl aur.sh) -si --noconfirm package-query yaourt)" -s /bin/bash docker
+
+USER docker
+# clean up
+RUN sudo rm -rf /home/docker/*
+
+# install packer and update databases
+RUN yaourt -Syyua --noconfirm --needed packer
+USER root
+
+EOF
+fi
+
+if [ ! -f "archlinux.tar.xz" ]; then
+    curl https://raw.githubusercontent.com/docker/docker/master/contrib/mkimage-arch.sh > ./mkimage-arch.sh
+    chmod +x mkimage-arch.sh
+
+    sed -i.bak \
+        -e 's/| docker import - archlinux/-af archlinux.tar.xz/g' \
+        -e '/docker run --rm -t archlinux echo Success./d' \
+        mkimage-arch.sh
+
+    curl https://raw.githubusercontent.com/docker/docker/master/contrib/mkimage-arch-pacman.conf > mkimage-arch-pacman.conf
+
+echo "Building Arch Linux-docker root filesystem archive."
+TMPDIR=${DN_ROOT} sudo ./mkimage-arch.sh
+echo "Arch Linux-docker root filesystem archive build complete."
+
+    rm -f mkimage-arch.sh
+    rm -f mkimage-arch.sh.bak
+    rm -f mkimage-arch-pacman.conf
+fi
