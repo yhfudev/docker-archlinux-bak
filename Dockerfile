@@ -1,10 +1,10 @@
 # Arch Linux baseline docker container
-# Generated on Wed Dec 23 08:40:15 EST 2015
+# Generated on Wed Dec 23 10:39:00 EST 2015
 # Read the following to learn how the root filesystem image was generated:
 # https://github.com/yhfudev/docker-archlinux/blob/master/README.md
-FROM base/archlinux:latest
+FROM scratch
 MAINTAINER yhfudev <yhfudev@gmail.com>
-
+ADD ./archlinux-x86_64-20151222.tar.xz /
 RUN pacman -Syyu --needed --noconfirm
 
 # install, run and remove reflector all in one line to prevent extra layer size
