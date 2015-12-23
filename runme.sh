@@ -58,6 +58,17 @@ pkgcache_backup2srcdst() {
     cd -
 }
 
+FN_ARCHBASE="archlinux-$(uname -m)-$(date +%Y%m%d).tar.xz"
+find . -maxdepth 1 -name "archlinux-$(uname -m)-*.tar.xz" | sort -r > b
+while read a; do
+    if [ -f "${a}" ]; then
+        FN_ARCHBASE="${a}"
+        #echo "found: ${FN_ARCHBASE}"
+        break;
+    fi
+done < b
+echo "FN_ARCHBASE=${FN_ARCHBASE}"
+
 cat > Dockerfile << EOF
 # Arch Linux baseline docker container
 # Generated on `date`
@@ -65,7 +76,7 @@ cat > Dockerfile << EOF
 # https://github.com/yhfudev/docker-archlinux/blob/master/README.md
 FROM scratch
 MAINTAINER yhfudev <yhfudev@gmail.com>
-ADD archlinux.tar.xz /
+ADD ${FN_ARCHBASE} /
 RUN pacman -Syyu --needed --noconfirm
 
 # install, run and remove reflector all in one line to prevent extra layer size
@@ -100,7 +111,7 @@ USER root
 EOF
 fi
 
-if [ ! -f "archlinux.tar.xz" ]; then
+if [ ! -f "${FN_ARCHBASE}" ]; then
     curl https://raw.githubusercontent.com/docker/docker/master/contrib/mkimage-arch.sh > ./mkimage-arch.sh
     chmod +x mkimage-arch.sh
 
@@ -118,4 +129,5 @@ echo "Arch Linux-docker root filesystem archive build complete."
     rm -f mkimage-arch.sh
     rm -f mkimage-arch.sh.bak
     rm -f mkimage-arch-pacman.conf
+    mv "archlinux.tar.xz" "${FN_ARCHBASE}"
 fi
